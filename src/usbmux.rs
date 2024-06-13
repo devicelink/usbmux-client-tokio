@@ -430,7 +430,7 @@ pub enum UsbmuxRequest {
 impl UsbmuxRequest {
     /// Wrap the request in a UsbmuxRequestBase
     pub fn wrapped(self) -> UsbmuxRequestBase {
-        let prog_name = String::from("usbmux-client");
+        let prog_name = String::from("usbmux-client-tokio");
         let client_version_string = String::from("1.0");
         UsbmuxRequestBase {
             variant: self,
@@ -454,7 +454,7 @@ mod tests {
             \t<key>MessageType</key>\n\
             \t<string>ListDevices</string>\n\
             \t<key>ProgName</key>\n\
-            \t<string>usbmux-client-rust</string>\n\
+            \t<string>usbmux-client-tokio</string>\n\
             \t<key>ClientVersionString</key>\n\
             \t<string>1.0</string>\n\
         </dict>\n\

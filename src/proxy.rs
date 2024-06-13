@@ -402,6 +402,7 @@ mod tests {
 
     use super::*;
 
+    #[ignore = "Needs to be run locally"]
     #[tokio::test]
     async fn test_proxy() -> crate::util::Result<()> {
         let listening_addr = std::env::temp_dir().join("usbmuxd");
