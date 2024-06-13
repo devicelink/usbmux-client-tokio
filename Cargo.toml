@@ -1,6 +1,6 @@
 [package]
 name = "usbmux-client-tokio"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 description = "A Rust implementation of the usbmux and lockdown protocol used to connect to iOS devices."
 authors = ["Andreas Lüdeke <andreas@devicelink.app>"]
