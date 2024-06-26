@@ -6,8 +6,8 @@ use std::task::Poll;
 use crate::util::{Result, UsbmuxError};
 use bytes::{Buf, BytesMut};
 use futures::stream::StreamExt;
-use futures::SinkExt;
 use futures::Sink;
+use futures::SinkExt;
 use futures::Stream;
 use plist;
 use serde::{de, Deserialize, Serialize};
@@ -17,7 +17,6 @@ use tokio::net::UnixStream;
 use tokio_util::codec::Framed;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
-use tracing::trace;
 
 const USBMUX_HEADER_LENGTH: usize = 16;
 
@@ -241,7 +240,10 @@ where
 {
     type Item = Result<UsbmuxPacket>;
 
-    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         Pin::new(&mut self.stream).poll_next(cx)
     }
 }
@@ -252,22 +254,34 @@ where
 {
     type Error = UsbmuxError;
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<core::result::Result<(), Self::Error>> {
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<core::result::Result<(), Self::Error>> {
         let this = self.get_mut();
         Pin::new(&mut this.stream).poll_ready(cx)
     }
 
-    fn start_send(self: Pin<&mut Self>, item: UsbmuxPacket) -> core::result::Result<(), Self::Error> {
+    fn start_send(
+        self: Pin<&mut Self>,
+        item: UsbmuxPacket,
+    ) -> core::result::Result<(), Self::Error> {
         let this = self.get_mut();
         Pin::new(&mut this.stream).start_send(item)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<core::result::Result<(), Self::Error>> {
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<core::result::Result<(), Self::Error>> {
         let this = self.get_mut();
         Pin::new(&mut this.stream).poll_flush(cx)
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<core::result::Result<(), Self::Error>> {
+    fn poll_close(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<core::result::Result<(), Self::Error>> {
         let this = self.get_mut();
         Pin::new(&mut this.stream).poll_close(cx)
     }
@@ -322,8 +336,24 @@ where
         self.next::<DeviceList>().await.map(|list| list.device_list)
     }
 
+    /// Find a device by serial number
+    pub async fn find_device<T>(&mut self, device_serial: T) -> Result<DeviceEntry>
+    where
+        T: Into<String>,
+    {
+        let device_serial = device_serial.into();
+        let devices: Vec<DeviceEntry> = self.list_devices().await?;
+        devices
+            .into_iter()
+            .find(|d| d.properties.serial_number == device_serial)
+            .ok_or(UsbmuxError::IOError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Device with serial number {} not found", device_serial),
+            )))
+    }
+
     /// conmnnect to a device
-    pub async fn connect(mut self, device_id: i32, port_number: i32) -> Result<S> {
+    pub async fn connect(mut self, device_id: u32, port_number: u16) -> Result<S> {
         self.send(
             UsbmuxRequest::Connect {
                 device_id,
@@ -344,16 +374,20 @@ where
     }
 
     /// Read a pair record
-    pub async fn read_pair_record(&mut self, udid: &str) -> Result<PairRecord> {
+    pub async fn read_pair_record<T>(&mut self, device_serial: T) -> Result<PairRecord>
+    where
+        T: Into<String>,
+    {
+        let device_serial = device_serial.into();
         self.send(
             UsbmuxRequest::ReadPairRecord {
-                pair_record_id: udid.to_string(),
+                pair_record_id: device_serial,
             }
             .wrapped(),
         )
         .await?;
         let data = self.next::<PairRecordData>().await?.data;
-        trace!("{}", pretty_hex::pretty_hex(&data));
+
         Ok(plist::from_bytes::<PairRecord>(&data)?)
     }
 
@@ -415,10 +449,10 @@ pub enum UsbmuxRequest {
     Connect {
         /// the device id
         #[serde(rename = "DeviceID")]
-        device_id: i32,
+        device_id: u32,
         /// the port number
         #[serde(rename = "PortNumber")]
-        port_number: i32,
+        port_number: u16,
     },
     /// ReadBuid request
     #[serde(rename = "ReadBUID")]
@@ -508,7 +542,7 @@ pub struct DeviceProperties {
 }
 
 /// Connection type
-#[derive(Serialize, Deserialize, Debug, Clone,PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ConnectionType {
     /// USB connection
     USB,

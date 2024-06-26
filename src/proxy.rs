@@ -1,8 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use crate::{
-    lockdown::LockdownConnection,
-    tls::{wrap_into_tls_client_stream, wrap_into_tls_server_stream, Stream},
+    lockdown::{DeviceStream, LockdownConnection, PListPacket},
     usbmux::{
         DeviceEntry, DeviceList, PairRecord, PairRecordData, ResultType, UsbmuxConnection,
         UsbmuxPacket,
@@ -11,9 +10,12 @@ use crate::{
 };
 use futures::{SinkExt, StreamExt};
 use plist::Value;
-use tracing::{info, trace};
 use std::io::Cursor;
-use tokio::sync::RwLock;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::RwLock,
+};
+use tracing::{info, trace};
 
 enum IOSConnectionProtocol<I, O>
 where
@@ -21,13 +23,13 @@ where
     O: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     USBMUXD {
-        incoming_stream: Stream<I>,
-        outgoing_stream: Stream<O>,
+        incoming_stream: DeviceStream<I>,
+        outgoing_stream: DeviceStream<O>,
     },
     LOCKDOWND {
         device_id: u32,
-        incoming_stream: Stream<I>,
-        outgoing_stream: Stream<O>,
+        incoming_stream: DeviceStream<I>,
+        outgoing_stream: DeviceStream<O>,
     },
 }
 
@@ -62,8 +64,8 @@ impl UsbmuxProxy {
 
         self.handle_protocol(
             IOSConnectionProtocol::USBMUXD {
-                incoming_stream: Stream::Plain(incoming_stream),
-                outgoing_stream: Stream::Plain(outgoing_stream),
+                incoming_stream: DeviceStream::Plain(incoming_stream),
+                outgoing_stream: DeviceStream::Plain(outgoing_stream),
             },
             connection_id,
         )
@@ -120,8 +122,8 @@ impl UsbmuxProxy {
     async fn handle_usbmuxd<I, O>(
         &self,
         connection_id: u32,
-        incoming_stream: Stream<I>,
-        outgoing_stream: Stream<O>,
+        incoming_stream: DeviceStream<I>,
+        outgoing_stream: DeviceStream<O>,
     ) -> Result<Option<IOSConnectionProtocol<I, O>>>
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -249,8 +251,7 @@ impl UsbmuxProxy {
                         &connect_response_msg,
                     );
 
-                    let connect_response: ResultType =
-                        UsbmuxPacket::decode(&connect_response_msg)?;
+                    let connect_response: ResultType = UsbmuxPacket::decode(&connect_response_msg)?;
                     if (connect_response
                         != ResultType {
                             message_type: "Result".into(),
@@ -294,8 +295,8 @@ impl UsbmuxProxy {
         &self,
         connection_id: u32,
         device_id: u32,
-        incoming_stream: Stream<I>,
-        outgoing_stream: Stream<O>,
+        incoming_stream: DeviceStream<I>,
+        outgoing_stream: DeviceStream<O>,
     ) -> Result<Option<IOSConnectionProtocol<I, O>>>
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -317,16 +318,15 @@ impl UsbmuxProxy {
             );
             outgoing_stream.send(lockdown_request).await?;
 
-            let lockdown_response: crate::lockdown::LockdownPacket =
-                match outgoing_stream.next().await {
-                    Some(msg) => msg?,
-                    None => {
-                        return Err(UsbmuxError::IOError(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "Connection closed",
-                        )))
-                    }
-                };
+            let lockdown_response: PListPacket = match outgoing_stream.next().await {
+                Some(msg) => msg?,
+                None => {
+                    return Err(UsbmuxError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "Connection closed",
+                    )))
+                }
+            };
             log_message(
                 connection_id,
                 Direction::UsbmuxdToAClient,
@@ -374,6 +374,50 @@ impl UsbmuxProxy {
     }
 }
 
+async fn wrap_into_tls_client_stream<S>(
+    stream: DeviceStream<S>,
+    pair_record: &PairRecord,
+) -> Result<DeviceStream<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let stream = match stream {
+        DeviceStream::Plain(stream) => {
+            crate::tls::wrap_into_tls_client_stream(stream, pair_record).await?
+        }
+        _ => {
+            return Err(UsbmuxError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Stream is already TLS.",
+            )))
+        }
+    };
+
+    Ok(DeviceStream::TlsClient(stream))
+}
+
+async fn wrap_into_tls_server_stream<S>(
+    stream: DeviceStream<S>,
+    pair_record: &PairRecord,
+) -> Result<DeviceStream<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let stream = match stream {
+        DeviceStream::Plain(stream) => {
+            crate::tls::wrap_into_tls_server_stream(stream, pair_record).await?
+        }
+        _ => {
+            return Err(UsbmuxError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Stream is already TLS.",
+            )))
+        }
+    };
+
+    Ok(DeviceStream::TlsServer(stream))
+}
+
 enum Direction {
     AClientToUsbmuxd,
     UsbmuxdToAClient,
@@ -391,7 +435,9 @@ impl std::fmt::Display for Direction {
 fn log_message(connection_id: u32, direction: Direction, message: impl Debug) {
     trace!(
         "Connection: {}\n============================ {} ============================\n{:?}\n",
-        connection_id, direction, message
+        connection_id,
+        direction,
+        message
     );
 }
 
@@ -432,5 +478,5 @@ mod tests {
                 }
             }
         }
-    }   
+    }
 }

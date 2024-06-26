@@ -1,79 +1,125 @@
 mod lockdown;
 mod proxy;
+mod services;
 mod tls;
 mod usbmux;
 mod util;
 
 use crate::proxy::UsbmuxProxy;
-use crate::util::Result;
-use std::{
-    os::unix::fs::PermissionsExt,
-    sync::Arc,
-};
+use crate::util::{usbmux, Result};
+use clap::{Parser, Subcommand};
+use services::installation_proxy::{list_apps, AppType};
+use std::{os::unix::fs::PermissionsExt, sync::Arc};
+use usbmux::ConnectionType;
 
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::
-    usbmux::{ConnectionType, UsbmuxClient}
-;
-
-const DEVICE_SERIAL: &str = "00008101-000E20623638001E";
-
-#[tokio::main]
-async fn main() -> () {
-    // check().await;
-    proxy("/var/run/usbmuxd".into(), "/var/run/usbmuxx".into())
-        .await
-        .unwrap();
+#[derive(Subcommand)]
+enum AppCommands {
+    /// List available devices
+    List {
+        #[clap(short, long, default_value_t=AppType::User)]
+        application_type: AppType,
+        #[clap(short, long, default_value_t = false)]
+        show_launch_prohibited_apps: bool,
+    },
+    /// Uninstall app with bundle_identifier
+    Uninstall {
+        /// Bundle identifier of the app to uninstall
+        bundle_identifier: String,
+    },
 }
 
-    pub async fn proxy(source_path: String, target_path: String) -> Result<()> {
-        let mut connection_counter = 0u32;
-        let listener = UnixListener::bind(&source_path)?;
-        let a = listener.local_addr()?;
-        let socket_path = a.as_pathname().unwrap();
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o777))?;
-        println!("Listening on: {}", &target_path);
+#[derive(Subcommand)]
+enum Commands {
+    /// List available devices
+    #[command(subcommand)]
+    App(AppCommands),
+    Proxy {
+        source: String,
+        target: String,
+    },
+}
 
-        let usbmux_proxy = Arc::new(UsbmuxProxy::new());
-        loop {
-            let target_path = target_path.clone();
-            let (incoming_socket, _) = listener.accept().await.unwrap();
-            let usbmux_proxy = Arc::clone(&usbmux_proxy);
-            tokio::spawn(async move {
-                let outgoing_stream = UnixStream::connect(&target_path).await.unwrap();
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+#[command(propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+    #[structopt(short, long, env = "DEVICE_SERIAL")]
+    device_serial: Option<String>,
+}
 
-                usbmux_proxy
-                    .proxy(incoming_socket, outgoing_stream, connection_counter)
-                    .await
-                    .unwrap();
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Cli::parse();
+
+    let device = match args.device_serial {
+        Some(device_serial) => usbmux().await?.find_device(&device_serial).await?,
+        None => usbmux()
+            .await?
+            .list_devices()
+            .await?
+            .into_iter()
+            .filter(|d| d.properties.connection_type == ConnectionType::USB)
+            .next()
+            .expect("No USB device found"),
+    };
+    let pair_record = usbmux()
+        .await?
+        .read_pair_record(&device.properties.serial_number)
+        .await?;
+
+    match args.command {
+        Commands::App(AppCommands::List {
+            application_type,
+            show_launch_prohibited_apps,
+        }) => {
+            let apps = list_apps(
+                &device,
+                &pair_record,
+                application_type,
+                show_launch_prohibited_apps,
+            )
+            .await?;
+            apps.into_iter().for_each(|app| {
+                println!("{}: {}", app.cf_bundle_identifier, app.cf_bundle_name);
             });
-            connection_counter += 1;
+        }
+        Commands::App(AppCommands::Uninstall { bundle_identifier }) => {
+            services::installation_proxy::uninstall(&device, &pair_record, &bundle_identifier)
+                .await?;
+        }
+        Commands::Proxy { source, target } => {
+            proxy(source, target).await?;
         }
     }
 
-async fn check() {
-    let socket_path = "/var/run/usbmuxd";
-    let mut mux_client = UsbmuxClient::connect_unix(socket_path).await.unwrap();
+    Ok(())
+}
 
-    let device_list = mux_client.list_devices().await.unwrap();
-    let device = device_list
-        .iter()
-        .find(|d| {
-            d.properties.serial_number == DEVICE_SERIAL
-                && d.properties.connection_type == ConnectionType::USB
-        })
-        .expect(
-            format!(
-                "Unable to fine device with serial number: {}",
-                DEVICE_SERIAL
-            )
-            .as_str(),
-        );
+pub async fn proxy(source_path: String, target_path: String) -> Result<()> {
+    let mut connection_counter = 0u32;
+    let listener = UnixListener::bind(&source_path)?;
+    let a = listener.local_addr()?;
+    let socket_path = a.as_pathname().unwrap();
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o777))?;
+    println!("Forwarding from {} => {}", &source_path, &target_path);
 
-    let pair_record = mux_client.read_pair_record(DEVICE_SERIAL).await.unwrap();
-    // println!("pair record: {:?}", pair_record);
+    let usbmux_proxy: Arc<UsbmuxProxy> = Arc::new(UsbmuxProxy::new());
+    loop {
+        let target_path = target_path.clone();
+        let (incoming_socket, _) = listener.accept().await.unwrap();
+        let usbmux_proxy = Arc::clone(&usbmux_proxy);
+        tokio::spawn(async move {
+            let outgoing_stream = UnixStream::connect(&target_path).await.unwrap();
 
-    println!("{}", pretty_hex::pretty_hex(&pair_record.host_certificate));
-    println!("{}", pretty_hex::pretty_hex(&pair_record.host_private_key));
+            usbmux_proxy
+                .proxy(incoming_socket, outgoing_stream, connection_counter)
+                .await
+                .unwrap();
+        });
+        connection_counter += 1;
+    }
 }
