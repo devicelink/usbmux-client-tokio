@@ -1,114 +1,19 @@
-use std::{
-    io::Cursor,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{io::Cursor, sync::Arc};
 
-use crate::util::{Result, UsbmuxError};
+use crate::util::Result;
 use rustls::{
     client::danger::ServerCertVerifier, pki_types::CertificateDer, ClientConfig, ServerConfig,
 };
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::usbmux::PairRecord;
 
-pub(crate) enum Stream<S>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    Plain(S),
-    TlsClient(tokio_rustls::client::TlsStream<S>),
-    TlsServer(tokio_rustls::server::TlsStream<S>),
-}
-
-impl<T> AsyncRead for Stream<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Stream::Plain(x) => Pin::new(x).poll_read(cx, buf),
-            Stream::TlsServer(x) => Pin::new(x).poll_read(cx, buf),
-            Stream::TlsClient(x) => Pin::new(x).poll_read(cx, buf),
-        }
-    }
-}
-
-impl<T> AsyncWrite for Stream<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    #[inline]
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Stream::Plain(x) => Pin::new(x).poll_write(cx, buf),
-            Stream::TlsServer(x) => Pin::new(x).poll_write(cx, buf),
-            Stream::TlsClient(x) => Pin::new(x).poll_write(cx, buf),
-        }
-    }
-
-    #[inline]
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Stream::Plain(x) => Pin::new(x).poll_write_vectored(cx, bufs),
-            Stream::TlsServer(x) => Pin::new(x).poll_write_vectored(cx, bufs),
-            Stream::TlsClient(x) => Pin::new(x).poll_write_vectored(cx, bufs),
-        }
-    }
-
-    #[inline]
-    fn is_write_vectored(&self) -> bool {
-        match self {
-            Stream::Plain(x) => x.is_write_vectored(),
-            Stream::TlsServer(x) => x.is_write_vectored(),
-            Stream::TlsClient(x) => x.is_write_vectored(),
-        }
-    }
-
-    #[inline]
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Stream::Plain(x) => Pin::new(x).poll_flush(cx),
-            Stream::TlsServer(x) => Pin::new(x).poll_flush(cx),
-            Stream::TlsClient(x) => Pin::new(x).poll_flush(cx),
-        }
-    }
-
-    #[inline]
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Stream::Plain(x) => Pin::new(x).poll_shutdown(cx),
-            Stream::TlsServer(x) => Pin::new(x).poll_shutdown(cx),
-            Stream::TlsClient(x) => Pin::new(x).poll_shutdown(cx),
-        }
-    }
-}
-
 pub(crate) async fn wrap_into_tls_server_stream<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: Stream<S>,
+    stream: S,
     pair_record: &PairRecord,
-) -> Result<Stream<S>> {
-    let stream = match stream {
-        Stream::Plain(stream) => stream,
-        _ => return Err(UsbmuxError::IOError(std::io::Error::new(std::io::ErrorKind::InvalidData, "Stream is already TLS."))),
-    };
-
+) -> Result<tokio_rustls::server::TlsStream<S>> {
     let root_certs = certs(&mut Cursor::new(&pair_record.host_certificate))
         .filter_map(|cert| match cert {
             Ok(cert) => Some(cert),
@@ -130,18 +35,13 @@ pub(crate) async fn wrap_into_tls_server_stream<S: AsyncRead + AsyncWrite + Unpi
         .unwrap();
 
     let tls_stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
-    Ok(Stream::TlsServer(tls_stream))
+    Ok(tls_stream)
 }
 
 pub(crate) async fn wrap_into_tls_client_stream<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: Stream<S>,
+    stream: S,
     pair_record: &PairRecord,
-) -> Result<Stream<S>> {
-    let stream = match stream {
-        Stream::Plain(stream) => stream,
-        _ => return Err(UsbmuxError::IOError(std::io::Error::new(std::io::ErrorKind::InvalidData, "Stream is already TLS."))),
-    };
-    
+) -> Result<tokio_rustls::client::TlsStream<S>> {
     let certs = certs(&mut Cursor::new(&pair_record.host_certificate))
         .filter_map(|cert| match cert {
             Ok(cert) => Some(cert),
@@ -167,7 +67,7 @@ pub(crate) async fn wrap_into_tls_client_stream<S: AsyncRead + AsyncWrite + Unpi
     let tls_stream = TlsConnector::from(Arc::new(config))
         .connect("apple.com".try_into().unwrap(), stream)
         .await?;
-    Ok(Stream::TlsClient(tls_stream))
+    Ok(tls_stream)
 }
 
 #[derive(Debug)]
@@ -220,7 +120,6 @@ impl ServerCertVerifier for NoCertificateVerification {
             rustls::SignatureScheme::RSA_PSS_SHA512,
             rustls::SignatureScheme::ED25519,
             rustls::SignatureScheme::ED448,
-
         ]
         .to_vec()
     }
