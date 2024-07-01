@@ -23,6 +23,10 @@ enum AppCommands {
         #[clap(short, long, default_value_t = false)]
         show_launch_prohibited_apps: bool,
     },
+    Install {
+        /// Path to the app to install
+        app_path: String,
+    },
     /// Uninstall app with bundle_identifier
     Uninstall {
         /// Bundle identifier of the app to uninstall
@@ -90,6 +94,9 @@ async fn main() -> Result<()> {
         Commands::App(AppCommands::Uninstall { bundle_identifier }) => {
             services::installation_proxy::uninstall(&device, &pair_record, &bundle_identifier)
                 .await?;
+        }
+        Commands::App(AppCommands::Install { app_path }) => {
+            services::zipconduit::install(&device, &pair_record, &app_path).await?;
         }
         Commands::Proxy { source, target } => {
             proxy(source, target).await?;
