@@ -82,7 +82,7 @@ impl ServerCertVerifier for NoCertificateVerification {
         _: &[u8],
         _: rustls::pki_types::UnixTime,
     ) -> std::prelude::v1::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        return Ok(rustls::client::danger::ServerCertVerified::assertion());
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(

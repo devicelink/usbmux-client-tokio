@@ -28,9 +28,8 @@ const ZIPCONDUIT_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 const EXTRA_BYTES: &str = "55540D00 07F3A2EC 60F6A2EC 60F3A2EC 6075780B 000104F5 01000004 14000000";
 
 fn get_extra_bytes() -> Vec<u8> {
-    let hex_string = EXTRA_BYTES.replace(" ", "");
-    let bytes = Vec::from_hex(hex_string).expect("Failed to parse hex string");
-    bytes
+    let hex_string = EXTRA_BYTES.replace(' ', "");
+    Vec::from_hex(hex_string).expect("Failed to parse hex string")
 }
 
 const CENTRAL_DIRECTORY_HEADER: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
@@ -63,7 +62,7 @@ impl ZipHeader {
             compression_method: 0,
             last_modified_time: 0xBDEF,
             last_modified_date: 0x52EC,
-            crc32: crc32,
+            crc32,
             compressed_size: size,
             uncompressed_size: size,
             file_name_length: name.into().len() as u16,
@@ -71,7 +70,7 @@ impl ZipHeader {
         }
     }
 
-    fn to_bytes(self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.signature.to_le_bytes());
         bytes.extend_from_slice(&self.version.to_le_bytes());
@@ -246,13 +245,13 @@ async fn add_file<R: AsyncRead + Unpin + Sized>(
     file_name: String,
     file_size: u32,
     crc32: u32,
-    extra_bytes: &Vec<u8>,
+    extra_bytes: &[u8],
     mut reader: R,
 ) -> Result<()> {
     let file_header =
         ZipHeader::new_zip_header(&file_name, file_size, crc32, extra_bytes.len() as u16);
     connection.write_all(&file_header.to_bytes()).await?;
-    connection.write_all(&file_name.as_bytes()).await?;
+    connection.write_all(file_name.as_bytes()).await?;
     connection.write_all(extra_bytes).await?;
     tokio::io::copy(&mut reader, connection).await?;
     Ok(())

@@ -75,6 +75,12 @@ const MAX: usize = 8 * 1024 * 1024;
 #[derive(Debug)]
 pub struct PListCodec {}
 
+impl Default for PListCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PListCodec {
     /// Create a new LockdownCodec.
     pub fn new() -> PListCodec {
@@ -324,7 +330,7 @@ where
     {
         let stream = Framed::new(DeviceStream::Plain(stream), PListCodec::new());
 
-        return LockdownConnection { stream };
+        LockdownConnection { stream }
     }
 
     /// Start a lockdown session on the device and eventually enable ssl for the session.
@@ -354,7 +360,7 @@ where
 
         if response.enable_session_ssl {
             let stream = self.stream.into_inner().into_inner();
-            let stream = wrap_into_tls_client_stream(stream, &pair_record).await?;
+            let stream = wrap_into_tls_client_stream(stream, pair_record).await?;
             let stream = Framed::new(DeviceStream::TlsClient(stream), PListCodec::new());
 
             return Ok(LockdownConnection { stream });
@@ -374,15 +380,15 @@ where
         self.send(request).await?;
         match self.next().await {
             Some(Ok(response)) => {
-                return response.decode();
+                response.decode()
             }
             None => {
-                return Err(UsbmuxError::IOError(std::io::Error::new(
+                Err(UsbmuxError::IOError(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "Unexpected EOF",
                 )))
             }
-            Some(Err(e)) => return Err(e),
+            Some(Err(e)) => Err(e),
         }
     }
 

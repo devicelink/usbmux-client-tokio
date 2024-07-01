@@ -9,7 +9,6 @@ use futures::stream::StreamExt;
 use futures::Sink;
 use futures::SinkExt;
 use futures::Stream;
-use plist;
 use serde::{de, Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::net::ToSocketAddrs;
@@ -46,7 +45,7 @@ impl UsbmuxHeader {
     /// Convert the header to a byte array
     pub fn to_bytes(&self) -> [u8; USBMUX_HEADER_LENGTH] {
         let mut buffer = [0u8; USBMUX_HEADER_LENGTH];
-        buffer[0..4].copy_from_slice(&(USBMUX_HEADER_LENGTH as u32 + &self.length).to_le_bytes());
+        buffer[0..4].copy_from_slice(&(USBMUX_HEADER_LENGTH as u32 + self.length).to_le_bytes());
         buffer[4..8].copy_from_slice(&self.version.to_le_bytes());
         buffer[8..12].copy_from_slice(&self.request.to_le_bytes());
         buffer[12..16].copy_from_slice(&self.tag.to_le_bytes());
@@ -126,6 +125,12 @@ pub struct UsbmuxCodec {}
 
 const MAX: usize = 8 * 1024 * 1024;
 
+impl Default for UsbmuxCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UsbmuxCodec {
     /// Create a new USBMux codec
     pub fn new() -> UsbmuxCodec {
@@ -139,14 +144,14 @@ impl Decoder for UsbmuxCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
         debug!("Decoding Usbmux message:\n{}", pretty_hex::pretty_hex(&src));
-        if src.len() < USBMUX_HEADER_LENGTH as usize {
+        if src.len() < USBMUX_HEADER_LENGTH {
             // Not enough data to read length marker.
             return Ok(None);
         }
 
         // Read length marker.
         let mut header_bytes = [0u8; USBMUX_HEADER_LENGTH];
-        header_bytes.copy_from_slice(&src[..USBMUX_HEADER_LENGTH as usize]);
+        header_bytes.copy_from_slice(&src[..USBMUX_HEADER_LENGTH]);
 
         let header = UsbmuxHeader::from_bytes(&header_bytes);
         let length = header.length as usize;
@@ -225,7 +230,7 @@ where
     pub fn new(stream: S) -> UsbmuxConnection<S> {
         let stream = Framed::new(stream, UsbmuxCodec::new());
 
-        return UsbmuxConnection { stream };
+        UsbmuxConnection { stream }
     }
 
     /// Get the inner stream
@@ -545,7 +550,7 @@ pub struct DeviceProperties {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ConnectionType {
     /// USB connection
-    USB,
+    Usb,
     /// Network connection
     Network,
 }

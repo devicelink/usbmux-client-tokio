@@ -22,11 +22,11 @@ where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     O: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    USBMUXD {
+    Usbmuxd {
         incoming_stream: DeviceStream<I>,
         outgoing_stream: DeviceStream<O>,
     },
-    LOCKDOWND {
+    Lockdown {
         device_id: u32,
         incoming_stream: DeviceStream<I>,
         outgoing_stream: DeviceStream<O>,
@@ -38,6 +38,12 @@ where
 pub struct UsbmuxProxy {
     device_entry_store: Arc<RwLock<HashMap<String, DeviceEntry>>>,
     pair_record_store: Arc<RwLock<HashMap<u32, PairRecord>>>,
+}
+
+impl Default for UsbmuxProxy {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UsbmuxProxy {
@@ -63,7 +69,7 @@ impl UsbmuxProxy {
         println!("New connection: {}", connection_id);
 
         self.handle_protocol(
-            IOSConnectionProtocol::USBMUXD {
+            IOSConnectionProtocol::Usbmuxd {
                 incoming_stream: DeviceStream::Plain(incoming_stream),
                 outgoing_stream: DeviceStream::Plain(outgoing_stream),
             },
@@ -85,7 +91,7 @@ impl UsbmuxProxy {
     {
         loop {
             match protocol {
-                IOSConnectionProtocol::USBMUXD {
+                IOSConnectionProtocol::Usbmuxd {
                     incoming_stream,
                     outgoing_stream,
                 } => {
@@ -97,7 +103,7 @@ impl UsbmuxProxy {
                         None => return Ok(()), // Connection closed
                     };
                 }
-                IOSConnectionProtocol::LOCKDOWND {
+                IOSConnectionProtocol::Lockdown {
                     device_id,
                     incoming_stream,
                     outgoing_stream,
@@ -162,7 +168,7 @@ impl UsbmuxProxy {
                         let mut device_entry_store = self.device_entry_store.write().await;
                         for device in device_list.device_list.iter() {
                             if device.properties.connection_type
-                                != crate::usbmux::ConnectionType::USB
+                                != crate::usbmux::ConnectionType::Usb
                             {
                                 continue;
                             }
@@ -266,7 +272,7 @@ impl UsbmuxProxy {
 
                     incoming_stream.send(connect_response_msg).await?;
 
-                    return Ok(Some(IOSConnectionProtocol::LOCKDOWND {
+                    return Ok(Some(IOSConnectionProtocol::Lockdown {
                         device_id,
                         incoming_stream: incoming_stream.into_inner(),
                         outgoing_stream: outgoing_stream.into_inner(),
@@ -337,38 +343,35 @@ impl UsbmuxProxy {
             incoming_stream.send(lockdown_response).await?;
 
             let value = value.into_dictionary().unwrap();
-            match value.get("EnableSessionSSL") {
-                Some(Value::Boolean(true)) => {
-                    let incoming_stream = incoming_stream.into_inner();
-                    let outgoing_stream = outgoing_stream.into_inner();
+            if let Some(Value::Boolean(true)) = value.get("EnableSessionSSL") {
+                let incoming_stream = incoming_stream.into_inner();
+                let outgoing_stream = outgoing_stream.into_inner();
 
-                    let pair_record = {
-                        let pair_record_store = self.pair_record_store.read().await;
-                        let (_, pair_record) = match pair_record_store.get_key_value(&device_id) {
-                            Some(pair_record) => pair_record,
-                            None => {
-                                return Err(UsbmuxError::IOError(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    format!(
-                                        "Failed to get value for {} from pair_record_store",
-                                        &device_id
-                                    ),
-                                )));
-                            }
-                        };
-
-                        pair_record.clone()
+                let pair_record = {
+                    let pair_record_store = self.pair_record_store.read().await;
+                    let (_, pair_record) = match pair_record_store.get_key_value(&device_id) {
+                        Some(pair_record) => pair_record,
+                        None => {
+                            return Err(UsbmuxError::IOError(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "Failed to get value for {} from pair_record_store",
+                                    &device_id
+                                ),
+                            )));
+                        }
                     };
 
-                    return Ok(Some(IOSConnectionProtocol::LOCKDOWND {
-                        device_id,
-                        incoming_stream: wrap_into_tls_server_stream(incoming_stream, &pair_record)
-                            .await?,
-                        outgoing_stream: wrap_into_tls_client_stream(outgoing_stream, &pair_record)
-                            .await?,
-                    }));
-                }
-                _ => {}
+                    pair_record.clone()
+                };
+
+                return Ok(Some(IOSConnectionProtocol::Lockdown {
+                    device_id,
+                    incoming_stream: wrap_into_tls_server_stream(incoming_stream, &pair_record)
+                        .await?,
+                    outgoing_stream: wrap_into_tls_client_stream(outgoing_stream, &pair_record)
+                        .await?,
+                }));
             }
         }
     }

@@ -65,9 +65,7 @@ async fn main() -> Result<()> {
             .await?
             .list_devices()
             .await?
-            .into_iter()
-            .filter(|d| d.properties.connection_type == ConnectionType::USB)
-            .next()
+            .into_iter().find(|d| d.properties.connection_type == ConnectionType::Usb)
             .expect("No USB device found"),
     };
     let pair_record = usbmux()

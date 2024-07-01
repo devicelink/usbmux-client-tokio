@@ -46,9 +46,9 @@ pub enum UsbmuxError {
 #[derive(Debug)]
 pub enum Connection {
     /// tcp connection
-    TCP(TcpStream),
+    Tcp(TcpStream),
     /// unix domain socket connection
-    UNIX(UnixStream),
+    Unix(UnixStream),
 }
 
 impl Connection {
@@ -65,14 +65,12 @@ impl Connection {
 
     /// parse the connection string and return either a tcp socket or unix domain socket connection
     async fn get(s: &str) -> Result<Self> {
-        if s.starts_with("UNIX:") {
-            let path = s[5..].to_string();
+        if let Some(path) = s.strip_prefix("UNIX:") {
             let stream = UnixStream::connect(path).await?;
-            return Ok(Connection::UNIX(stream));
-        } else if s.starts_with("TCPIP:") {
-            let addr = s[6..].to_string();
+            Ok(Connection::Unix(stream))
+        } else if let Some(addr) = s.strip_prefix("TCPIP:") {
             let stream = TcpStream::connect(addr).await?;
-            return Ok(Connection::TCP(stream));
+            return Ok(Connection::Tcp(stream));
         } else {
             Err(UsbmuxError::Error(format!(
                 "Unspported connection type: {}",
@@ -90,8 +88,8 @@ impl AsyncRead for Connection {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            Connection::UNIX(x) => Pin::new(x).poll_read(cx, buf),
-            Connection::TCP(x) => Pin::new(x).poll_read(cx, buf),
+            Connection::Unix(x) => Pin::new(x).poll_read(cx, buf),
+            Connection::Tcp(x) => Pin::new(x).poll_read(cx, buf),
         }
     }
 }
@@ -104,8 +102,8 @@ impl AsyncWrite for Connection {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
-            Connection::UNIX(x) => Pin::new(x).poll_write(cx, buf),
-            Connection::TCP(x) => Pin::new(x).poll_write(cx, buf),
+            Connection::Unix(x) => Pin::new(x).poll_write(cx, buf),
+            Connection::Tcp(x) => Pin::new(x).poll_write(cx, buf),
         }
     }
 
@@ -116,32 +114,32 @@ impl AsyncWrite for Connection {
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
-            Connection::UNIX(x) => Pin::new(x).poll_write_vectored(cx, bufs),
-            Connection::TCP(x) => Pin::new(x).poll_write_vectored(cx, bufs),
+            Connection::Unix(x) => Pin::new(x).poll_write_vectored(cx, bufs),
+            Connection::Tcp(x) => Pin::new(x).poll_write_vectored(cx, bufs),
         }
     }
 
     #[inline]
     fn is_write_vectored(&self) -> bool {
         match self {
-            Connection::UNIX(x) => x.is_write_vectored(),
-            Connection::TCP(x) => x.is_write_vectored(),
+            Connection::Unix(x) => x.is_write_vectored(),
+            Connection::Tcp(x) => x.is_write_vectored(),
         }
     }
 
     #[inline]
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            Connection::UNIX(x) => Pin::new(x).poll_flush(cx),
-            Connection::TCP(x) => Pin::new(x).poll_flush(cx),
+            Connection::Unix(x) => Pin::new(x).poll_flush(cx),
+            Connection::Tcp(x) => Pin::new(x).poll_flush(cx),
         }
     }
 
     #[inline]
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            Connection::UNIX(x) => Pin::new(x).poll_shutdown(cx),
-            Connection::TCP(x) => Pin::new(x).poll_shutdown(cx),
+            Connection::Unix(x) => Pin::new(x).poll_shutdown(cx),
+            Connection::Tcp(x) => Pin::new(x).poll_shutdown(cx),
         }
     }
 }
@@ -229,7 +227,7 @@ pub(crate) async fn lockdown(device_id: u32) -> Result<LockdownConnection<Connec
         .await?
         .connect(device_id, LOCKDOWN_PORT)
         .await
-        .map(|l| LockdownConnection::new(l))
+        .map(LockdownConnection::new)
 }
 
 pub(crate) struct StartServiceResponse {
@@ -273,12 +271,11 @@ pub(crate) async fn connect_service(
     match service.with_ssl {
         None => Ok(Framed::new(TlsStream::Plain(stream), PListCodec::new())),
         Some(pair_record) => {
-            let pair_record = pair_record;
             let tls_stream = tls::wrap_into_tls_client_stream(stream, &pair_record).await?;
-            return Ok(Framed::new(
+            Ok(Framed::new(
                 TlsStream::ClientTls(tls_stream),
                 PListCodec::new(),
-            ));
+            ))
         }
     }
 }

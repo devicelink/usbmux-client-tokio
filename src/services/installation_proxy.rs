@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, str::FromStr};
+use std::{collections::HashMap, fmt::Display};
 
 use futures::SinkExt;
 use plist::{plist, Dictionary, Value};
@@ -164,7 +164,7 @@ pub(crate) async fn list_apps(
             None => return Err(UsbmuxError::Error("Unexpected end of file".to_string())),
         };
 
-        apps.append(&mut response.current_list.unwrap_or(Vec::new()));
+        apps.append(&mut response.current_list.unwrap_or_default());
 
         if response.status == "Complete" {
             break;
@@ -182,7 +182,7 @@ pub(crate) async fn uninstall(
     let service = start_service(
         device.device_id,
         INSTALLATON_PROXY_SERVICE_NAME,
-        &pair_record,
+        pair_record,
     )
     .await?;
 
