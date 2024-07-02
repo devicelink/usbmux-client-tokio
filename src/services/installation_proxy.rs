@@ -115,6 +115,7 @@ pub(crate) async fn list_apps(
         pair_record,
     )
     .await?;
+    let mut service_connection = connect_service(device.device_id, service).await?;
 
     let application_type = match application_type {
         AppType::User => Some(AppType::User),
@@ -122,8 +123,7 @@ pub(crate) async fn list_apps(
         AppType::Filesharing => Some(AppType::Filesharing),
         AppType::All => None,
     };
-    let mut service_connection = connect_service(device.device_id, service).await?;
-
+    
     let request = plist!({
         "Command": "Browse",
         "ClientOptions": {

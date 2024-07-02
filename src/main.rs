@@ -9,8 +9,11 @@ use crate::proxy::UsbmuxProxy;
 use crate::util::{usbmux, Result};
 use clap::{Parser, Subcommand};
 use services::installation_proxy::{list_apps, AppType};
+use services::screenshotr::ScreenshotrService;
+use std::cmp::max;
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
-use usbmux::ConnectionType;
+use usbmux::{ConnectionType, DeviceEntry, PairRecord};
+use util::UsbmuxError;
 
 use tokio::net::{UnixListener, UnixStream};
 
@@ -35,10 +38,22 @@ enum AppCommands {
 }
 
 #[derive(Subcommand)]
-enum Commands {
+enum DeviceCommands {
     /// List available devices
+    List,
+    /// Take a screenshot from the device
+    Screenshot{
+        /// Path to the app to install
+        output: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum Commands {
     #[command(subcommand)]
     App(AppCommands),
+    #[command(subcommand)]
+    Device(DeviceCommands),
     Proxy {
         source: String,
         target: String,
@@ -59,25 +74,50 @@ struct Cli {
 async fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let device = match args.device_serial {
-        Some(device_serial) => usbmux().await?.find_device(&device_serial).await?,
-        None => usbmux()
-            .await?
-            .list_devices()
-            .await?
-            .into_iter().find(|d| d.properties.connection_type == ConnectionType::Usb)
-            .expect("No USB device found"),
-    };
-    let pair_record = usbmux()
-        .await?
-        .read_pair_record(&device.properties.serial_number)
-        .await?;
-
     match args.command {
+        Commands::Device(DeviceCommands::List) => {
+            let devices: Vec<DeviceEntry> = usbmux().await?.list_devices().await?;
+            let id_width = max(devices
+                .iter()
+                .map(|d| d.device_id.to_string().len())
+                .max()
+                .unwrap_or(0), 6); // Default to 8 if no devices
+            let serial_width = max(devices
+                .iter()
+                .map(|d| d.properties.serial_number.len())
+                .max()
+                .unwrap_or(0), 25); // Default to 6
+
+                println!(
+                    "{:<id_width$} {:<serial_width$} ConnectionType",
+                    "DeviceID", "Serial",
+                    id_width = id_width + 2,
+                    serial_width = serial_width + 2
+                );
+
+                devices.into_iter().for_each(|device| {
+                println!(
+                    "{:<id_width$} {:<serial_width$} {:?}",
+                    device.device_id,
+                    device.properties.serial_number,
+                    device.properties.connection_type,
+                    id_width = id_width + 2,
+                    serial_width = serial_width + 2,
+                );
+            });
+        }
+        Commands::Device(DeviceCommands::Screenshot { output }) => {
+            let (device, pair_record) = device(args.device_serial).await?;
+            let mut screenshotr = ScreenshotrService::new(&device, &pair_record).await?;
+            let screenshot = screenshotr.take_screenshot().await?;
+
+            std::fs::write(output, screenshot)?;
+        }
         Commands::App(AppCommands::List {
             application_type,
             show_launch_prohibited_apps,
         }) => {
+            let (device, pair_record) = device(args.device_serial).await?;
             let apps = list_apps(
                 &device,
                 &pair_record,
@@ -90,10 +130,12 @@ async fn main() -> Result<()> {
             });
         }
         Commands::App(AppCommands::Uninstall { bundle_identifier }) => {
+            let (device, pair_record) = device(args.device_serial).await?;
             services::installation_proxy::uninstall(&device, &pair_record, &bundle_identifier)
                 .await?;
         }
         Commands::App(AppCommands::Install { app_path }) => {
+            let (device, pair_record) = device(args.device_serial).await?;
             services::zipconduit::install(&device, &pair_record, &app_path).await?;
         }
         Commands::Proxy { source, target } => {
@@ -127,4 +169,33 @@ pub async fn proxy(source_path: String, target_path: String) -> Result<()> {
         });
         connection_counter += 1;
     }
+}
+
+async fn device(device_serial: Option<String>) -> Result<(DeviceEntry, PairRecord)> {
+    let mut devices = usbmux().await?.list_devices().await?;
+    devices.sort_by_key(|device| if device.properties.connection_type == ConnectionType::Usb { 0 } else { 1 });
+
+    let device = match device_serial {
+        Some(device_serial) => devices
+            .into_iter()
+            .find(|device| device.properties.serial_number == device_serial)
+            .ok_or_else(|| {
+                UsbmuxError::Error(format!(
+                    "Device with serial number {} not found",
+                    device_serial
+                ))
+            }),
+        None => devices
+            .into_iter()
+
+            .next()
+            .ok_or_else(|| UsbmuxError::Error("Device not found".to_owned())),
+    }?;
+
+    let pair_record = usbmux()
+        .await?
+        .read_pair_record(&device.properties.serial_number)
+        .await?;
+
+    Ok((device, pair_record))
 }

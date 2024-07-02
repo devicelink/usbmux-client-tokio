@@ -5,7 +5,7 @@ use std::{
 
 use bytes::{Buf, BytesMut};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use plist::{Value, XmlWriteOptions};
+use plist::{self, Value, XmlWriteOptions};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::codec::{Decoder, Encoder, Framed};
@@ -48,6 +48,14 @@ impl TryFrom<Value> for PListPacket {
         )
         .unwrap();
         Ok(Self { payload })
+    }
+}
+
+impl TryInto<Value> for PListPacket {
+    type Error = UsbmuxError;
+
+    fn try_into(self) -> Result<Value> {
+        plist::from_bytes(&self.payload).map_err(|e| e.into())
     }
 }
 

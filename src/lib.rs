@@ -14,6 +14,7 @@ mod proxy;
 mod tls;
 mod usbmux;
 mod util;
+mod services;
 
 pub use lockdown::*;
 pub use proxy::*;

@@ -548,8 +548,10 @@ pub struct DeviceProperties {
 
 /// Connection type
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "PascalCase")]
 pub enum ConnectionType {
     /// USB connection
+    #[serde(rename = "USB")]
     Usb,
     /// Network connection
     Network,
